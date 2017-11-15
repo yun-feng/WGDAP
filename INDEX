@@ -1,0 +1,20 @@
+Check_dual              Quality Control for Post-processing
+FPI                     The Fixed Point Iteration
+Run_lasso               Post-processing
+data_lasso              Prepare Dataset for Post-processing
+down_sample             Down Sample The Original Dataset
+feval                   Evaluate the Loss
+get_sep                 Calculate the Separation Value for Ploidy
+init_var                Set the Initial Value for Variables
+int_ploidy              Calculate Integer Ploidy Value for
+                        Post-processing
+load_data               Load Dataset Containing Copy Number Profile
+par_lasso               Prepare Parameters for Post-processing
+plot_after              Plot Recurrent CNV After WGD for each loci
+plot_bar                Plot the Original Copy number for Selected Loci
+plot_before             Plot Recurrent CNV Before WGD for each loci
+plot_ploidy             Plot Inferred v.s. Average Ploidy
+plot_scatter            Plot Recurrent CNV Before v.s. After WGD for
+                        each loci
+set_par                 Set Up Parameters for Analysis
+var_lasso               Prepare Variables for Post-processing
