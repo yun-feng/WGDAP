@@ -1,0 +1,76 @@
+---
+title: "Change types of reccurent SCNA"
+author: "Yun Feng"
+date: "23 Nov 2017"
+output: 
+ html_document:
+  toc: true
+  toc_depth: 2
+  number_sections: true
+  font_size: 30
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8,
+                      echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+```{r include=FALSE}
+setwd("C:/github/WGDAP/")
+devtools::test()
+library(WGDAP)
+```
+
+#Introduction
+
+This document is aimed to give a detailed example on how to change the type of reccurent SCNA that one might use in his/her own analysis.
+
+Under most scenarios, we will think that SCNA happening before WGD will certainly affect both samples with and without WGD, just in a different way. However, SCNA happening after WGD will only affect samples without WGD for in samples without WGD, there is no difference between changes "before" or "after" WGD. This is true for most datasets. 
+
+Despite such fact, there are a few cases will one might be interested in other types of SCNA. For example, one might be intested in SCNA that only affect samples without WGD. These types of SCNA might be important for people to study the molecular mechanism between WGD and SCNA.
+
+Our model has such advantage of being flexible to include these types of SCNA. Here in this vignette, we give an example on how to make these changes to the model.
+
+#Example
+
+Here, our data come from TCGA colorectal cancer data.
+
+```{r load}
+Dir="C:\\Double\\transfer\\Cosmic\\copynumber_summaries"
+cancer="coad"
+wkdata<-load_data(Dir,cancer);
+wkdata<-down_sample(wkdata)
+```
+
+The crucial step is to change the parameters used.
+Here, we want to set this type of SCNA to be on the major copy only, for on minor copy, the loss of 1 copy after WGD will dominate the copy number profile change. And although we allow inference three types of SCNA in the model, it is not advisable for this makes the model less robust. Thus, we delete the original SCNA that only affect samples with WGD on major copy.
+
+This new type of SCNA will influence the copy number profile in a way like (-g+2), where g is the haplotype ploidy of the sample: if the sample's genome is not duplicated, it will gain one copy with 1 unit of change in this type of SCNA; it will not change if its genome is duplicated. (Originally, for the SCNA only affect samples with WGD is (g-1).)
+```{r par}
+CNV_par<-set_par(data=wkdata,A_p=c(1,-1),B_p=c(0,2))
+```
+
+And then, set everything else the same as before.
+
+```{r other}
+common_var<-init_var(wkdata,CNV_par)
+init_loss<-feval(wkdata,CNV_par,common_var)
+```
+
+Run fixed point iteration.
+```{r FPI}
+FPI_result=FPI(wkdata,CNV_par,common_var,init_loss,max_iter=600)
+```
+
+It is not sugested to run a lasso after the FPI, because as mentioned before, on minor copy, the loss of 1 copy in samples with WGD will usually dominate the profile, and delete this change will usually lead to results confusing people.
+
+Check changes.
+```{r scatter}
+library(ggplot2)
+var=as.matrix(FPI_result$var$inf_X_p)
+p_scatter<-plot_scatter(wkdata,var,loci=c(28,506))
+p_scatter
+wkdata$minor=wkdata$major
+p_bar<-plot_bar(wkdata,FPI_result$var$inf_g,loci=c(28,506),max=6)
+p_bar
+```
