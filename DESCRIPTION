@@ -1,0 +1,13 @@
+Package: WGDAP
+Version: 0.1
+Date: 2017-11-08
+Title: Whole Genome Duplication Analysis Pipeline
+Description: Decomposation of the effect from whole genome duplication and somatic copy number alteration for cancer samples.
+Author: Yun Feng <yun.feng@well.ox.ac.uk>
+Maintainer: Yun Feng <yun.feng@well.ox.ac.uk>
+NeedsCompilation: no
+Packaged: 2017-11-09 16:52:36 UTC; ted
+RoxygenNote: 6.0.1
+Built: R 3.4.2; ; 2017-11-09 16:56:04 UTC; unix
+Suggests: testthat, knitr, rmarkdown
+VignetteBuilder: knitr

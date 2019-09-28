@@ -1,0 +1,627 @@
+---
+title: "Genome Duplication Analysis Pipeline"
+author: "Yun Feng"
+date: "1 Nov 2017"
+output: 
+ html_document:
+  toc: true
+  toc_depth: 2
+  number_sections: true
+  font_size: 30
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8,
+                      echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+```{r echo=FALSE}
+load_data<-function(mainDir,cancer_type){
+  setwd(mainDir)
+  minor_file=paste(cancer_type,"_minorcn.csv",sep="")
+  major_file=paste(cancer_type,"_majorcn.csv",sep="")
+  
+  coordinate_file="coad_coords.txt"
+  C_m=read.table(minor_file,sep=",",header=F)
+  C_p=read.table(major_file,sep=",",header=F)
+  coordinate_m=read.table(coordinate_file,sep=",",header=F)
+  K=ncol(C_m)
+  N=nrow(C_m)
+  data<-list(nsample=K,nloci=N,minor=C_m,major=C_p,loci=coordinate_m)
+}
+
+down_sample<-function(CNV_data,factor=10){
+  C_m<-as.matrix(CNV_data$minor[seq(1,nrow(CNV_data$minor),factor),])
+  C_p<-as.matrix(CNV_data$major[seq(1,nrow(CNV_data$major),factor),])
+  coordinate_m<-as.matrix(CNV_data$loci[seq(1,nrow(CNV_data$loci),factor),])
+  K=ncol(C_m)
+  N=nrow(C_m)
+  data<-list(nsample=K,nloci=N,minor=C_m,major=C_p,loci=coordinate_m)
+  return(data);
+}
+
+set_par<-function(data,r_before=10,r_after=10,r_ploidy=5,r_discontinuity=0.5){
+  weight_L=diag(data$nloci)
+  D<-matrix(0*(data$nloci-1)*data$nloci,nrow=data$nloci-1,ncol=data$nloci)
+  for(i in 1:(data$nloci-1)){
+    if(data$loci[i,1]==data$loci[i+1,1]){
+      D[i,i]=(3*10^9/data$nloci)/(data$loci[i+1,2]-data$loci[i,2])
+      D[i,i+1]=(3*10^9/data$nloci)/(data$loci[i,2]-data$loci[i+1,2])
+    }
+  }
+  D<-t(D)%*%D
+  penal_discontinuity=r_discontinuity
+  weight_L=weight_L+penal_discontinuity*D
+  
+  param<-list(  par_a_m=1,
+                par_A_m=matrix(c(1,1),ncol=1),
+                par_B_m=matrix(c(0,-1),ncol=1),
+                mean_m=matrix(c(0,-1),ncol=1),
+                penal_m=c(r_before,r_after),
+                
+                par_a_p=1,
+                par_A_p=matrix(c(1,1),ncol=1),
+                par_B_p=matrix(c(0,-1),ncol=1),
+                mean_p=matrix(c(0,0),ncol=1),
+                penal_p=c(r_before,r_after),
+                
+                penal_g=r_ploidy,
+                weight_L=weight_L)
+  return(param)
+}
+
+init_var<-function(data,par){
+  v<-list( inf_g=matrix(rep(1,data$nsample),ncol=1),
+           inf_X_m=matrix(rep(par$mean_m,each=data$nloci),nrow=data$nloci,ncol=length(par$mean_m)),
+           inf_X_p=matrix(rep(par$mean_p,each=data$nloci),nrow=data$nloci,ncol=length(par$mean_p)) 
+  )
+  return(v)
+}
+
+feval<-function(data,par,var){
+  left_m=data$minor-par$par_a_m*rep(1,data$nloci)%*%t(var$inf_g)-var$inf_X_m%*%par$par_A_m%*%t(var$inf_g)-var$inf_X_m%*%par$par_B_m%*%t(rep(1,data$nsample))
+  left_p=data$minor-par$par_a_p*rep(1,data$nloci)%*%t(var$inf_g)-var$inf_X_p%*%par$par_A_p%*%t(var$inf_g)-var$inf_X_p%*%par$par_B_p%*%t(rep(1,data$nsample))
+  loss=sum(diag(crossprod(left_m)))+sum(diag(crossprod(left_p)));
+  return(loss)
+}
+
+FPI<-function(data,par,var,new,max_iter=400){
+  remain=c(new)
+  
+  i=0
+  last=new+1;
+  
+  C_m=data$minor
+  C_p=data$major
+  N=data$nloci
+  K=data$nsample
+  
+  inf_g=var$inf_g
+  inf_X_m=var$inf_X_m
+  inf_X_p=var$inf_X_p
+  
+  par_a_m=par$par_a_m
+  par_A_m=par$par_A_m
+  par_B_m=par$par_B_m
+  mean_m= par$mean_m
+  penal_m=par$penal_m
+  
+  par_a_p=par$par_a_p
+  par_A_p=par$par_A_p
+  par_B_p=par$par_B_p
+  mean_p=par$mean_p
+  penal_p=par$penal_p
+  
+  penal_g=par$penal_g
+  weight_L=par$weight_L
+  
+  while(abs(new-last)>10^(-5)){
+    
+    last=new;
+    
+    temp_C_m=C_m-par_a_m*rep(1,N)%*%t(inf_g)
+    temp_C_m=temp_C_m%*%inf_g%*%t(par_A_m)+temp_C_m%*%rep(1,K)%*%t(par_B_m)
+    temp_C_m=temp_C_m+matrix(rep(mean_m*penal_m,each=N),nrow=N,ncol=length(mean_m))
+    temp_m=diag(penal_m)+par_A_m%*%(t(inf_g)%*%inf_g)%*%t(par_A_m)+par_A_m%*%(t(inf_g)%*%rep(1,K))%*%t(par_B_m)
+    temp_m=temp_m+par_B_m%*%(t(rep(1,K))%*%rep(1,K))%*%t(par_B_m)+par_B_m%*%(t(rep(1,K))%*%inf_g)%*%t(par_A_m)
+    inf_X_m=temp_C_m%*%solve(temp_m)
+    
+    temp_C_p=C_p-par_a_p*rep(1,N)%*%t(inf_g)
+    temp_C_p=temp_C_p%*%inf_g%*%t(par_A_p)+temp_C_p%*%rep(1,K)%*%t(par_B_p)
+    temp_C_p=temp_C_p+matrix(rep(mean_p*penal_p,each=N),nrow=N,ncol=length(mean_p))
+    temp_p=diag(penal_p)+par_A_p%*%(t(inf_g)%*%inf_g)%*%t(par_A_p)+par_A_p%*%(t(inf_g)%*%rep(1,K))%*%t(par_B_p)
+    temp_p=temp_p+par_B_p%*%(t(rep(1,K))%*%rep(1,K))%*%t(par_B_p)+par_B_p%*%(t(rep(1,K))%*%inf_g)%*%t(par_A_p)
+    inf_X_p=temp_C_p%*%solve(temp_p)
+    
+    temp_C=t(C_m)%*%(weight_L%*%(inf_X_m%*%par_A_m+par_a_m*rep(1,N)))+t(C_p)%*%(weight_L%*%(inf_X_p%*%par_A_p+par_a_p*rep(1,N)))
+    temp_C=temp_C-rep(1,K)%*%((t(par_B_m)%*%t(inf_X_m))%*%weight_L%*%(inf_X_m%*%par_A_m+par_a_m*rep(1,N)))-rep(1,K)%*%((t(par_B_p)%*%t(inf_X_p))%*%weight_L%*%(inf_X_p%*%par_A_p+par_a_p*rep(1,N)))
+    temp_C=temp_C+penal_g*rep(1,K)
+    temp_g=t((inf_X_m%*%par_A_m+par_a_m*rep(1,N)))%*%weight_L%*%(inf_X_m%*%par_A_m+par_a_m*rep(1,N))+t((inf_X_p%*%par_A_p+par_a_p*rep(1,N)))%*%weight_L%*%(inf_X_p%*%par_A_p+par_a_p*rep(1,N))
+    temp_g=temp_g+penal_g
+    inf_g=temp_C/temp_g[1,1]
+    
+    left_m=C_m-par_a_m*rep(1,N)%*%t(inf_g)-inf_X_m%*%par_A_m%*%t(inf_g)-inf_X_m%*%par_B_m%*%t(rep(1,K))
+    left_p=C_p-par_a_p*rep(1,N)%*%t(inf_g)-inf_X_p%*%par_A_p%*%t(inf_g)-inf_X_p%*%par_B_p%*%t(rep(1,K))
+    new=sum(diag(crossprod(left_m)))+sum(diag(crossprod(left_p)));
+    remain=c(remain,new)
+    
+    i=i+1
+    if(i>max_iter){break}
+  }
+  return(list(var=list(inf_g=inf_g,inf_X_m=inf_X_m,inf_X_p=inf_X_p),loss_array=remain))
+}
+
+get_sep<-function(var){
+  inf_g=var$inf_g
+  h<-density(inf_g)
+  for(i in 2:length(h$y)){
+    if(h$y[i]<h$y[i-1] && h$y[i]<h$y[i+1] ) break
+  }
+  g_sep<-h$x[i]
+  return(g_sep)
+}
+
+int_ploidy<-function(var,sep){
+  g<-rep(1,length(var$inf_g))
+  g[which(var$inf_g>sep)]<-2
+  return(g)
+}
+
+data_lasso<-function(data,g,par_a=1){
+  C_m<-as.matrix(data$minor)
+  C_p<-as.matrix(data$major)
+  N=nrow(C_m)
+  K=ncol(C_m)
+ 
+  C_m=C_m-par_a*rep(1,N)%*%t(g)
+  C_p=C_p-par_a*rep(1,N)%*%t(g)
+  
+  return(list(minor=C_m,major=C_p,nsample=K,nloci=N, loci=data$loci))
+}
+
+var_lasso<-function(var,factor=10){
+  inf_X_m<-as.matrix(var$inf_X_m)
+  inf_X_p<-as.matrix(var$inf_X_p)
+  inf_X=rep(0.5*inf_X_m+0.5*inf_X_p,each=factor)
+  N=length(inf_X)/2
+  dim(inf_X)<-c(N,2)
+  return(inf_X)
+}
+
+par_lasso<-function(N,K,g){
+  par_a<-1
+  mean_X<-c(0,-0.5)
+  X_mean<-rep(mean_X,each=N)
+  dim(X_mean)<-c(N,2)
+  
+  #Multiplier
+  par_A<-matrix(c(1,1),ncol=1)
+  par_B<-matrix(c(0,-1),ncol=1)
+  
+  A<-par_A%*%t(g)+par_B%*%t(rep(1,K))
+  steplen<-diag(1/(A%*%t(A)))
+  
+  return(list(par_a=1,
+         mean_X=mean_X,
+         X_mean=X_mean,
+         par_A=par_A,
+         par_B=par_B,
+         A=A,
+         steplen=steplen)
+  )
+}
+
+Run_lasso<-function(data,par,var,g,lambda=c(8,4)){
+  
+  C_m=data$minor
+  C_p=data$major
+  K=data$nsample
+  N=data$nloci
+  
+  inf_X=var
+  
+  par_a=par$par_a
+  par_A=par$par_A
+  par_B=par$par_B
+  A=par$A
+  X_mean=par$X_mean
+  mean_X=par$mean_X
+  steplen=par$steplen
+  
+  error_array=c()
+  
+  new=1/4*norm(C_m-inf_X%*%par_A%*%t(g)-inf_X%*%par_B%*%t(rep(1,K)),type="F")^2+1/4*norm(C_p-inf_X%*%par_A%*%t(g)-inf_X%*%par_B%*%t(rep(1,K)),type="F")^2+sum(abs(inf_X-X_mean)%*%diag(lambda))
+  error_array=c(new)
+  old=new+1
+  
+  while(abs(new-old)>10^(-5) || flag){
+    for(i in 1:2){
+      flag=F
+      temp=(0.5*C_m+0.5*C_p-inf_X%*%par_A%*%t(g)-inf_X%*%par_B%*%t(rep(1,K)))%*%A[i,]
+      if(max(abs(temp))>lambda[i]*1.000001){flag=T}
+      inf_X[,i]=inf_X[,i]+steplen[i]*temp
+      off_set=inf_X[,i]-mean_X[i]
+      temp<-abs(off_set)-lambda[i]*steplen[i]
+      inf_X[,i]<-ifelse(temp<0,mean_X[i],mean_X[i]+temp*sign(off_set))
+    }
+    old=new
+    new=1/4*norm(C_m-inf_X%*%par_A%*%t(g)-inf_X%*%par_B%*%t(rep(1,K)),type="F")^2+1/4*norm(C_p-inf_X%*%par_A%*%t(g)-inf_X%*%par_B%*%t(rep(1,K)),type="F")^2+sum(abs(inf_X-X_mean)%*%diag(lambda))
+    error_array=c(error_array,new)
+  }
+  return(list(var=inf_X,loss_array=error_array))
+}
+
+Check_dual<-function(data,par,res,g,lambda=c(8,4)){
+  C_m=data$minor
+  C_p=data$major
+  K=data$nsample
+  
+  inf_X=res$var
+  
+  par_a=par$par_a
+  par_A=par$par_A
+  par_B=par$par_B
+  A=par$A
+  X_mean=par$X_mean
+  
+  new=res$loss_array[length(res$loss_array)]
+    
+  for (i in 1:2){print(max((0.5*C_m+0.5*C_p-inf_X%*%par_A%*%t(g)-inf_X%*%par_B%*%t(rep(1,K)))%*%A[i,]));
+    print(lambda[i]);}
+  
+  dual<-1/4*norm(C_m-X_mean%*%par_A%*%t(g)-X_mean%*%par_B%*%t(rep(1,K)),type="F")^2+1/4*norm(C_p-X_mean%*%par_A%*%t(g)-X_mean%*%par_B%*%t(rep(1,K)),type="F")^2-1/2*norm((inf_X-X_mean)%*%par_A%*%t(g)+(inf_X-X_mean)%*%par_B%*%t(rep(1,K)),type="F")^2
+  gap=new-dual
+  print(gap)
+  
+}
+
+plot_ploidy<-function(data,var,g_sep){
+  
+  C_m=data$minor
+  C_p=data$major
+  K=data$nsample
+  N=data$nloci
+  
+  inf_g=var$inf_g
+  
+  ave_ploidy<-c()
+  for(i in 1:K){
+    ave_ploidy<-c(ave_ploidy,(sum(C_m[,i])+sum(C_p[,i]))/N)
+  }
+  
+  wkdata<-data.frame(ave_ploidy,inf_ploidy=inf_g)
+  fit<-lm(inf_g~ave_ploidy)
+  
+  p_a<-ggplot(wkdata)+geom_abline(slope=0.5,intercept=0,color="blue",size=2.2,alpha=0.6)+geom_point(aes(x=ave_ploidy,y=inf_ploidy),alpha=0.8,size=2)
+  p_a<-p_a+geom_abline(slope=0,intercept=g_sep,color="gold",lty=2,size=2)
+  p_a<-p_a+geom_abline(slope=fit$coefficients[2],intercept=fit$coefficients[1],color="darkgreen",size=2.7,alpha=0.6)+
+    theme(axis.text = element_text(color = "blue", size = 22))+
+    theme(axis.title.x = element_text(color = "black", size = 25))+
+    theme(axis.title.y = element_text(color = "black", size = 25))+
+    labs(x = "Average Ploidy",y = "Predicted Ploidy")
+  return(p_a)
+}
+
+plot_before<-function(data,var){
+
+  coordinate_m=data$loci
+  N=data$nloci
+  inf_X=var
+  
+  inf_X<-as.matrix(inf_X)
+  
+  chr_c<-c()
+  for (i in 2:N){
+    if(coordinate_m[i,1]>coordinate_m[i-1,1]){
+      chr_c<-c(chr_c,i)
+    }
+  }
+  chr_center=c(0,chr_c[1:length(chr_c)])
+  chr_center=(chr_center+c(chr_c,N))/2
+  chrmosome=data.frame(chr_center,Chr=factor(1:length(chr_center)))
+  
+  
+  wkdata<-data.frame(SNP_locus=1:N,Before=2*inf_X[,1],After=2*inf_X[,2],Chr=factor(coordinate_m[,1]))
+  p_a<-ggplot(data=wkdata)+geom_point(aes(x=SNP_locus,y=Before,color=Chr),size=1.3,show.legend = F)+
+    geom_text(data=chrmosome,aes(x=chr_center,y=rep(min(2*inf_X[,1])*1.001,length(chr_center)),label=c(1:length(chr_center)),color=Chr),show.legend = F,size=5)+
+    geom_vline(xintercept =chr_c-0.5)+ 
+    labs(x="SNP locus",y = "Before WGD")+theme(axis.text = element_text(color = "blue", size = 20))+
+    theme(axis.title.x = element_text(color = "black", size = 20))+
+    theme(axis.title.y = element_text(color = "black", size = 20))+
+    theme(
+      legend.text = element_text(size = 20),
+      legend.title = element_text(size = 20, face = "bold")
+    )
+  return(p_a)
+}
+
+plot_after<-function(data,var){
+  
+  coordinate_m=data$loci
+  N=data$nloci
+  inf_X=var
+  
+  inf_X<-as.matrix(inf_X)
+  
+  chr_c<-c()
+  for (i in 2:N){
+    if(coordinate_m[i,1]>coordinate_m[i-1,1]){
+      chr_c<-c(chr_c,i)
+    }
+  }
+  chr_center=c(0,chr_c[1:length(chr_c)])
+  chr_center=(chr_center+c(chr_c,N))/2
+  chrmosome=data.frame(chr_center,Chr=factor(1:length(chr_center)))
+  
+  wkdata<-data.frame(SNP_locus=1:N,Before=2*inf_X[,1],After=2*inf_X[,2],Chr=factor(coordinate_m[,1]))
+  p_b<-ggplot(data=wkdata)+geom_point(aes(x=SNP_locus,y=After,color=Chr),size=1.3,show.legend = F)+
+    geom_text(data=chrmosome,aes(x=chr_center,y=rep(min(2*inf_X[,2]*1.001),length(chr_center)),label=c(1:length(chr_center)),color=Chr),show.legend = F,size=5)+
+    geom_vline(xintercept =chr_c-0.5)
+  p_b<-p_b+
+    labs(x="SNP locus", y = "After WGD")+theme(axis.text = element_text(color = "blue", size = 20))+
+    theme(axis.title.x = element_text(color = "black", size = 20))+
+    theme(axis.title.y = element_text(color = "black", size = 20))+
+    theme(
+      legend.text = element_text(size = 20),
+      legend.title = element_text(size = 20, face = "bold")
+    )
+  p_b
+  return(p_b)
+}
+
+plot_scatter<-function(data,var,loci=NULL){
+  
+  coordinate_m=data$loci
+  N=data$nloci
+  inf_X=var
+  
+  inf_X<-as.matrix(inf_X)
+  
+  chr_c<-c()
+  for (i in 2:N){
+    if(coordinate_m[i,1]>coordinate_m[i-1,1]){
+      chr_c<-c(chr_c,i)
+    }
+  }
+  chr_center=c(0,chr_c[1:length(chr_c)])
+  chr_center=(chr_center+c(chr_c,N))/2
+  chrmosome=data.frame(chr_center,Chr=factor(1:length(chr_center)))
+  
+  
+  wkdata<-data.frame(SNP_locus=1:N,Before=2*inf_X[,1],After=2*inf_X[,2],Chr=factor(coordinate_m[,1]))
+  p_c<-ggplot(data=wkdata)+geom_point(aes(x=Before,y=After,color=Chr),size=1.3)
+  if(length(loci)){
+    p_c<-p_c+
+      geom_rect(data=wkdata[loci,],aes(xmin=Before-0.015,xmax=Before+0.015,ymin=After-0.02,ymax=After+0.02),color="black",fill=NA,show.legend=F,size=1.0)+
+      geom_text(data=wkdata[loci,],aes(x=Before,y=After,label=paste("Locus",SNP_locus)),nudge_y=-0.025,size=4)
+  }
+  
+  p_c<-p_c+ labs(x = "Before WGD",y = "After WGD")+
+    theme(axis.text = element_text(color = "blue", size = 20))+
+    theme(axis.title.x = element_text(color = "black", size = 20))+
+    theme(axis.title.y = element_text(color = "black", size = 20))+
+    theme(
+      legend.text = element_text(size = 20),
+      legend.title = element_text(size = 20, face = "bold")
+    )
+  return(p_c)
+}
+
+plot_bar<-function(data,g,loci,max){
+  C_m=data$minor
+  C_p=data$major
+  
+  g<-rep(g,2)
+  C_phase=cbind(C_p,C_m)
+  num<-c()
+  ploidy<-c()
+  CNV<-c()
+  locus<-c()
+  for(i in 0:max){
+    for(j in 1:length(loci)){
+      num<-c(num,length(which(C_phase[loci[j],which(g<1.5)]==i)))
+      CNV<-c(CNV,i)
+      ploidy<-c(ploidy,1)
+      locus<-c(locus,loci[j])
+      
+      num<-c(num,length(which(C_phase[loci[j],which(g>1.5)]==i)))
+      CNV<-c(CNV,i)
+      ploidy<-c(ploidy,2)
+      locus<-c(locus,loci[j])
+    }
+    
+  }
+  loci_comp<-data.frame(Number_of_samples=num,ploidy,CNV,SNP_locus=factor(locus))
+  library(ggplot2)
+  p_d<-ggplot(data=loci_comp)+geom_bar(aes(x=CNV,y=Number_of_samples,fill=SNP_locus),stat="identity",pos="dodge")+
+    facet_wrap(~ploidy)+theme(axis.text = element_text(color = "blue", size = 20))+
+    theme(axis.title.x = element_text(color = "black", size = 20))+
+    theme(axis.title.y = element_text(color = "black", size = 20))+
+    theme(
+      legend.text = element_text(size = 20),
+      legend.title = element_text(size = 20, face = "bold"),
+      strip.text = element_text(size=20)
+    )+
+    labs(fill="SNP locus",x="CNV",y="Number of Samples")
+  return(p_d)
+}
+```
+
+#Introduction
+
+This document is aimed to give a detailed example on how to apply the method to the CNV dataset. The dataset we used here is BLCA files from TCGA website. 
+
+
+#Preprocessing
+
+##Load Integer-valued CNV Dataset 
+
+Read from csv files, and they should like as follows.
+
+```{r load_data}
+Dir="C:\\Double\\transfer\\Cosmic\\copynumber_summaries"
+cancer="blca"
+wkdata<-load_data(Dir,cancer);
+head(wkdata$minor[,1:6])
+```
+
+##Down-sampling
+
+Down-sample the loci by a factor of 10. (Only 1000 loci left after downsampling.)
+
+```{r down-sample}
+wkdata<-down_sample(wkdata)
+```
+
+
+#WGD analysis
+
+Run the algorithm developed before, and get an estimator of the (haplotype) ploidy and the CNAs on these 1000 loci.
+
+##Set Up Parameters
+
+As described in the report, there are a handful of regularization parameters used in the model. We give default values for these parameters, including penalty strength, mean values and penalty matrice. In most cases, the user does not need to change these values.
+
+
+```{r parameter}
+CNV_par<-set_par(wkdata)
+```
+
+##Initialize All Variables
+
+Here, we initialize all the variables (CNVs and Ploidy) to their believed mean values, and calculate the initial loss based on this setting.
+
+```{r init}
+common_var<-init_var(wkdata,CNV_par)
+init_loss<-feval(wkdata,CNV_par,common_var)
+```
+
+##Fixed-point Iterations
+
+We use the fixed point method in the report to recursively calculate the value for all variables. The update rules are described in the report in details. They general purpose is to find the point where the derivatives with respect to the variables equal zero. We stop the iteration until the improvement in the optimization target is sufficiently small. 
+
+```{r iter}
+FPI_result=FPI(wkdata,CNV_par,common_var,init_loss)
+
+```
+
+## Quality Control
+Check the convergence of the algorithm and the distribution of (haplotype) ploidy.
+
+```{r check}
+plot(FPI_result$loss_array[4:length(FPI_result$loss_array)])
+plot(density((FPI_result$var)$inf_g))
+```
+
+Set the separation value for samples with and without WGD to be the valley of the distribution.
+
+```{r separation}
+g_sep=get_sep(FPI_result$var)
+```
+
+#Post-processing
+
+For post-processing part, we run a LASSO like problem (change the original L2 penalty to L1 for all regularizers) with (haplotype) ploidy fixed to either 1 or 2, which is determined based on the separation value.
+
+Here, we are using CNAs before and after WGD to opredict the copy numbers both one minor and major copies. Namely, we are trying to minimize the squared errors both on minor and major copies. (The same effect as permutation the original minor and major dataset.) 
+
+The parameters for LASSO were determined by cross-validation, but here we choose relatively larger values in order to keep the result sparse. (Namely, We tradeoff between the test-error due to high bias and the sparsity of the result.)
+
+##Change Ploidy to Integer
+
+We change the inferred ploidy states from previous sections to either 1 or 2.
+
+```{r change_g}
+g_int=int_ploidy(FPI_result$var,g_sep)
+```
+
+
+##Reload Data
+
+We reload the integer valued CNV dataset, for we are going to use the full dataset, rather than the down-sampled one, this time.
+
+```{r reload}
+wkdata<-load_data(Dir,cancer);
+```
+
+##Run LASSO
+
+We then solve a lasso-like problem, with all the regularization parameters been determined by cross validation.
+
+The lasso-like problem is solved by proximal gradient descent method. We use the CNVs calculated before as a starting point and stop it after the improvement in one iteration is sufficiently small and the dual variable is close enough to feasible.
+
+```{r lasso}
+wkdata<-data_lasso(wkdata,g_int)
+var<-var_lasso(FPI_result$var)
+par<-par_lasso(wkdata$nloci,wkdata$nsample,g_int)
+
+Lasso_res<-Run_lasso(wkdata,par,var,g_int)
+```
+
+##Quality Control for Post-processing
+
+Check the convergence of the algorithm.
+```{r conv}
+plot(Lasso_res$loss_array)
+```
+
+Check if the dual variable is feasible and the duality gap is small (sometimes negative due to numeric error).
+
+```{r dual}
+Check_dual(wkdata,par,Lasso_res,g_int)
+```
+
+#Plot all the graphs
+
+Check the infered ploidy with respect to the average ploidy of the original file.
+
+```{r ploidy}
+library(ggplot2)
+wkdata<-load_data(Dir,cancer);
+p<-plot_ploidy(wkdata,FPI_result$var,g_sep)
+p
+```
+
+
+Plot all the CNVs before WGD.
+```{r before}
+p_before<-plot_before(wkdata,Lasso_res$var)
+p_before
+```
+
+Plot all the CNVs after WGD.
+
+```{r after}
+p_after<-plot_after(wkdata,Lasso_res$var)
+p_after
+```
+
+Scatter plot for all CNVs before and after WGD.
+
+We pick out some loci for validation.
+
+Compared to locus 3606:
+
+locus 864 loses less after WGD, while locus 4858 loses more after WGD;
+
+locus 5261 gains more before WGD, while locus 5570 loses more before WGD.
+
+```{r scatter}
+p_scatter<-plot_scatter(wkdata,Lasso_res$var,loci=c(3606,864,4858,5261,5570))
+p_scatter
+```
+
+Check original dataset to confirm our computation.
+
+Compared to locus 3606:
+
+locus 864 has more samples with WGD contain 2 copies of this locus,
+while locus 4858 has more samples with WGD contain 0 copies of this locus;
+
+locus 5261 has more samples with WGD contain higher copies of this locus,
+while locus 5570 has more LOH in samples both with and without WGD.
+
+```{r ori}
+p_bar<-plot_bar(wkdata,g_int,loci=c(3606,864,4858,5261,5570),max=7)
+p_bar
+```

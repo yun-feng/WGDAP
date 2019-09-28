@@ -1,0 +1,16 @@
+---
+title: "README"
+author: "Yun Feng"
+date: "8 November 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Whole Genome Duplication Analysis Pipline
+
+This package aims to give a pipeline for the analysis of the copy number profile data, got from either SNP-array data or next generation sequencing data, on (tumor) samples with whole genome duplication (WGD).
+
+For duplication and other focal somatic copy number alterations(SCNA) will both influence the copy number profile, it is not easy to study the changes on the genome for samples with WGD. Here, we present a method, which based on suffient number of samples, could separate the effect of WGD and recurrent SCNA alterations, and find out whether the SCNA tends to happen before or after WGD. 
